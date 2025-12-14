@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Internal network load balancer that allows services to connect to ECS cluster
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: 'ks-dev'
+    Description: The name of the environment to add this load balancer to
+    AllowedValues: ['ks-dev','ks-stg','ks-prd']
+
+
+Resources:
+
+  # The network load balancer is placed into the private subnets, so that traffic
+  # from the internet can reach the network load balancer via the internet gateway VPC private ink
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Name: !Sub '${EnvironmentName}-cluster-nlb'
+      Scheme: internal
+      Type: network
+      LoadBalancerAttributes:
+        - Key: 'load_balancing.cross_zone.enabled'
+          Value: 'true'
+      Subnets:
+        - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetOne
+        - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetTwo
+      Tags:
+        - Key: project
+          Value: !Ref 'EnvironmentName'
+
+  # A dummy target group is used to setup the NLB to just drop traffic
+  # initially, before any real service target groups have been added.
+  DummyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: TCP
+      UnhealthyThresholdCount: 3
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}:VpcId
+      Tags:
+        - Key: project
+          Value: !Ref 'EnvironmentName'
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - NetworkLoadBalancer
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroup'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'NetworkLoadBalancer'
+      Port: 80
+      Protocol: TCP
+
+  APIGatewayVPCLink:
+    Type: AWS::ApiGateway::VpcLink
+    Properties: 
+      Description: VPC link to private network load balancer for ECS cluster.
+      Name: !Sub '${EnvironmentName}-cluster-nlb-link'
+      TargetArns: 
+        - !Ref 'NetworkLoadBalancer'
+
+
+Outputs:
+  ExternalUrl:
+    Description: The url of the external load balancer
+    Value: !Sub ${NetworkLoadBalancer.DNSName}
+    Export:
+      Name: !Sub ${EnvironmentName}:ExternalUrl
+  LoadBalancer:
+    Description: A reference to the Application Load Balancer
+    Value: !Ref  NetworkLoadBalancer    
+    Export:
+      Name: !Sub ${EnvironmentName}:LoadBalancerARN
