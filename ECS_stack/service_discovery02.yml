@@ -1,0 +1,27 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: External, public facing load balancer, for forwarding public traffic to containers
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: 'ks-dev'
+    Description: The name of the environment to add this load balancer to
+    AllowedValues: ['ks-dev','ks-stg','ks-prd']
+Resources:
+    Namespace:
+      Type: 'AWS::ServiceDiscovery::PrivateDnsNamespace'
+      Properties:
+        Description: !Ref 'AWS::StackName'
+        Vpc: 
+            Fn::ImportValue: !Sub ${EnvironmentName}:VpcId
+        Name: !Sub '${EnvironmentName}-ns'
+Outputs:        
+  NamespaceARN:
+    Description: 'The ARN of the namespace.'
+    Value: !GetAtt 'Namespace.Arn'
+    Export:
+      Name: !Sub ${EnvironmentName}:NamespaceARN
+  NamespaceID:
+    Description: 'The ID of the namespace.'
+    Value: !GetAtt 'Namespace.Id'
+    Export:
+      Name: !Sub ${EnvironmentName}:NamespaceID
