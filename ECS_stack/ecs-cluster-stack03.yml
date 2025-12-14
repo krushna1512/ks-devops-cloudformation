@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EC2 ECS cluster running containers in a private subnet. Supports
+             public facing load balancers, private internal load balancers, and
+             both internal and external service discovery namespaces.
+
+Parameters:
+    EnvironmentName:
+        Type: String
+        Default: 'ks-dev'
+        Description: "A friendly environment name that will be used for namespacing all cluster resources. Example: staging, qa, or production"
+        AllowedValues: ['ks-dev','ks-stg','ks-prd']
+    InstanceType:
+        Description: EC2 instance type
+        Type: String
+        Default: t3a.small
+        Description: Class of EC2 instance used to host containers. Choose t2 for testing, m5 for general purpose, c5 for CPU intensive services, and r5 for memory intensive services
+        AllowedValues: [ t3a.small, t3a.medium, t3a.large ]
+        ConstraintDescription: Please choose a valid instance type.
+    DesiredCapacity:
+        Type: Number
+        Default: '1'
+        Description: Number of EC2 instances to launch in your ECS cluster.
+    MaxSize:
+        Type: Number
+        Default: '4'
+        Description: Maximum number of EC2 instances that can be launched in your ECS cluster.
+    ECSAMI:
+        Description: AMI ID
+        Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+        Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+        Description: The Amazon Machine Image ID used for the cluster, leave it as the default value to get the latest AMI
+    EbsVolumeSize:
+      Type: Number
+      Description: >
+        Optional - Specifies the Size in GBs, of the newly created Amazon
+        Elastic Block Store (Amazon EBS) volume
+      Default: '10'
+    EbsVolumeType:
+      Type: String
+      Description: Optional - Specifies the Type of (Amazon EBS) volume
+      Default: 'gp2'
+      AllowedValues:
+        - ''
+        - standard
+        - io1
+        - gp2
+        - sc1
+        - st1
+      ConstraintDescription: Must be a valid EC2 volume type.
+    DeviceName:
+      Type: String
+      Description: Optional - Specifies the device mapping for the Volume     
+      Default: '/dev/xvdcz'
+
+Resources:   
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+        ClusterName: !Sub '${EnvironmentName}-cluster'
+  
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      # AutoScalingGroupName: !Sub '${EnvironmentName}-cluster-asg'
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub '${EnvironmentName}:PrivateSubnetOne'
+        - Fn::ImportValue: !Sub '${EnvironmentName}:PrivateSubnetTwo'
+      LaunchConfigurationName: !Ref 'LaunchConfiguration'
+      MinSize: '0'
+      MaxSize: !Ref 'MaxSize'
+      DesiredCapacity: !Ref 'DesiredCapacity'
+      Tags:
+        - Key: 'Name'
+          Value: !Sub '${EnvironmentName}-cluster-instance'
+          PropagateAtLaunch: true
+        - Key: 'project'
+          Value: !Ref EnvironmentName
+          PropagateAtLaunch: true  
+
+  PrivateClusterHostSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Join ['-', [ !Ref EnvironmentName,'cluster','host','sg']]
+      GroupDescription: Access to the ECS hosts that run containers
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}:VpcId
+      SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 32768
+            ToPort: 61000
+            CidrIp: 10.0.0.0/16
+            Description: 'VPC CIDR traffic to ECS cluster'
+      Tags:
+        - Key: project
+          Value: !Ref EnvironmentName
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      # LaunchConfigurationName: !Sub '${EnvironmentName}-cluster-lauch-configuration'
+      ImageId: !Ref 'ECSAMI'
+      # KeyName: !Sub '${EnvironmentName}-cluster'
+      MetadataOptions: 
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 3
+        HttpTokens: required
+      SecurityGroups: 
+        - !Ref PrivateClusterHostSG
+      InstanceType: !Ref 'InstanceType'
+      IamInstanceProfile: 
+            Fn::ImportValue: !Sub '${EnvironmentName}:EC2InstanceProfile'
+      BlockDeviceMappings:
+        - DeviceName: !Ref DeviceName
+          Ebs:
+            VolumeSize: !Ref EbsVolumeSize
+            VolumeType: !Ref EbsVolumeType
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo "DOCKER_CONTENT_TRUST=1" >> /etc/environment;
+          echo "ECS_CLUSTER=${EnvironmentName}-cluster" >> /etc/ecs/ecs.config;
+          echo "ECS_ENABLE_CONTAINER_METADATA=true" >> /etc/ecs/ecs.config;
+          echo "ECS_BACKEND_HOST=" >> /etc/ecs/ecs.config;
+          echo "ECS_DISABLE_PRIVILEGED=true" >> /etc/ecs/ecs.config;
+          echo "ECS_SELINUX_CAPABLE=true" >> /etc/ecs/ecs.config;
+          echo "ECS_APPARMOR_CAPABLE=true" >> /etc/ecs/ecs.config;
+          echo "-w /usr/bin/docker -p wa" >> /etc/audit/audit.rules;
+          echo "-w /var/lib/docker -p wa" >> /etc/audit/audit.rules;
+          echo "-w /etc/docker -p wa" >> /etc/audit/audit.rules;
+          echo "-w /usr/lib/systemd/system/docker.service -p wa" >> /etc/audit/audit.rules;
+          echo "-w /usr/lib/systemd/system/docker.socket -p wa" >> /etc/audit/audit.rules;
+          echo "-w /etc/default/docker -p wa" >> /etc/audit/audit.rules;
+          echo "-w /etc/docker/daemon.json -p wa" >> /etc/audit/audit.rules;
+          echo "-w /usr/bin/docker-containerd -p wa" >> /etc/audit/audit.rules;
+          echo "-w /usr/bin/docker-runc -p wa" >> /etc/audit/audit.rules;
+
+Outputs:
+  ClusterName:
+    Description: The name of the ECS cluster
+    Value: !Ref 'ECSCluster'
+    Export:
+      Name: !Sub '${EnvironmentName}:ClusterName'
+  AutoScalingGroupName:
+    Description: The name of the auto scaling group created for cluster
+    Value: !Ref 'AutoScalingGroup'
+    Export:
+      Name: !Sub '${EnvironmentName}:AutoScalingGroup'
